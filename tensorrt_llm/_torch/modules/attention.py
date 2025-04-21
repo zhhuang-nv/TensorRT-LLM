@@ -427,21 +427,14 @@ class MLA(nn.Module):
         self.aux_stream = aux_stream
         self.ln_events = [torch.cuda.Event(), torch.cuda.Event()]
 
-<<<<<<< HEAD
         self.enable_rope_fusion = self.mha.support_fused_rope()
         self.support_fused_qkv = self.mha.support_fused_qkv()
-        self.rotary_emb = None
-=======
-        self.enable_rope_fusion = isinstance(self.mha, TrtllmAttention)
-        self.support_fused_qkv = isinstance(self.mha, TrtllmAttention)
-        self.support_unfused_qkv = not isinstance(self.mha, TrtllmAttention)
+        self.apply_rotary_emb = not self.enable_rope_fusion
         self.rotary_emb = RotaryEmbedding(
             pos_embd_params.rope,
             head_dim=self.qk_rope_head_dim,
             is_neox=pos_embd_params.is_neox,
         )
->>>>>>> 44469349 (support kv cache reuse for MLA)
-        self.apply_rotary_emb = not self.enable_rope_fusion
 
         if not config.skip_create_weights_in_init:
             self.create_weights()

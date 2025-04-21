@@ -374,8 +374,7 @@ class TestDeepSeekV3Lite(LlmapiAccuracyTestHarness):
                                     attention_dp, cuda_graph,
                                     overlap_scheduler):
         # OOM on H100 with default free_gpu_memory_fraction=0.9
-        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8,
-                                        enable_block_reuse=False)
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
         pytorch_config = PyTorchConfig(
             enable_overlap_scheduler=overlap_scheduler,
             use_cuda_graph=cuda_graph)
