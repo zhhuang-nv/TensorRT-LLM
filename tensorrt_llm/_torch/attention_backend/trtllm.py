@@ -576,7 +576,7 @@ class TrtllmAttentionMetadata(AttentionMetadata):
 
         # prepare for kv cache reuse/chunked context in MLA
         if self.enable_paged_context_mla:
-            self.prepare_paged_context_mla(cached_token_lens)
+            self.prepare_paged_context_mla(cached_token_lens, kv_lens)
 
         # kv block offsets
         assert self.request_ids is not None
@@ -598,8 +598,8 @@ class TrtllmAttentionMetadata(AttentionMetadata):
         self.block_ids_per_seq[:self.num_generations, :num_blocks].copy_(
             block_ids_per_seq[self.num_contexts:], non_blocking=True)
 
-    def prepare_paged_context_mla(self,
-                                  cached_token_lens: torch.Tensor) -> None:
+    def prepare_paged_context_mla(self, cached_token_lens: torch.Tensor,
+                                  kv_lens: torch.Tensor) -> None:
         if self.num_contexts > 0:
             self.num_ctx_cached_tokens = cached_token_lens[:self.
                                                            num_contexts].sum(
@@ -607,8 +607,7 @@ class TrtllmAttentionMetadata(AttentionMetadata):
             self.max_ctx_cached_kv_len = cached_token_lens[:self.
                                                            num_contexts].max(
                                                            ).item()
-            self.max_ctx_full_seq_len = self.kv_lens[:self.num_contexts].max(
-            ).item()
+            self.max_ctx_full_seq_len = kv_lens[:self.num_contexts].max().item()
             self.max_ctx_uncached_seq_len = self.seq_lens[:self.
                                                           num_contexts].max(
                                                           ).item()
@@ -627,7 +626,7 @@ class TrtllmAttentionMetadata(AttentionMetadata):
             self.host_cu_ctx_cached_kv_lens[:self.num_contexts + 1],
             non_blocking=True)
 
-        cu_ctx_full_seq_lens = torch.cumsum(self.kv_lens[:self.num_contexts],
+        cu_ctx_full_seq_lens = torch.cumsum(kv_lens[:self.num_contexts],
                                             dim=0,
                                             dtype=torch.int64)
         cu_ctx_full_seq_lens = torch.cat(
