@@ -414,10 +414,9 @@ class PyTorchModelEngine(ModelEngine):
                 # need to remove those extra tokens from the max_seq_len.
                 token_num = max(
                     1,
-                    min(
-                        available_tokens, kv_cache_manager.max_seq_len -
-                        kv_cache_manager.num_extra_kv_tokens - 1 -
-                        max_num_draft_tokens),
+                    min(available_tokens, kv_cache_manager.max_seq_len) -
+                    kv_cache_manager.num_extra_kv_tokens - 1 -
+                    max_num_draft_tokens,
                 )
                 # Add one dummy request with the maximum possible sequence length.
                 # The sequence length is limited by both the max_seq_len and the number of available blocks.
