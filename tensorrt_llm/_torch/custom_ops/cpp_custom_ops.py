@@ -163,6 +163,8 @@ def _register_fake():
         v_head_dim,
         mrope_rotary_cos_sin,
         mrope_position_deltas,
+        mla_context_paged_kv,
+        mla_context_kv_cache_block_offsets,
     ):
         output_shape = (q.shape[0], num_heads *
                         v_head_dim if is_mla_enable else num_heads * head_size)
