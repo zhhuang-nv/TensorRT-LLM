@@ -30,6 +30,7 @@ import os
 import warnings
 from typing import Dict, List, Optional, Tuple
 
+import nvtx
 import torch
 import torch.nn.functional as F
 import triton
@@ -674,6 +675,7 @@ class DeepseekV3DecoderLayer(DecoderLayer):
                 enable_allreduce=not self.disable_attn_allreduce),
             **kwargs,
         )
+        nvtx.push_range("post_attn", color="grey", domain="TensorRT-LLM")
 
         if isinstance(self.mlp, Deepseekv3MoE):
             return self.forward_MoE(
@@ -776,6 +778,7 @@ class DeepseekV3DecoderLayer(DecoderLayer):
                     hidden_states, residual = self.next_layer_layernorm(
                         hidden_states, residual)
 
+        nvtx.pop_range(domain="TensorRT-LLM")
         return hidden_states, residual
 
     def forward_mlp(
@@ -820,6 +823,7 @@ class DeepseekV3DecoderLayer(DecoderLayer):
                 hidden_states, residual = self.next_layer_layernorm(
                     hidden_states, residual)
 
+        nvtx.pop_range(domain="TensorRT-LLM")
         return hidden_states, residual
 
 

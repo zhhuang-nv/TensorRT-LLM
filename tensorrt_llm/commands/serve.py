@@ -35,6 +35,7 @@ def get_llm_args(model: str,
                  num_postprocess_workers: int = 0,
                  trust_remote_code: bool = False,
                  reasoning_parser: Optional[str] = None,
+                 enable_block_reuse: bool = True,
                  **llm_args_extra_dict: Any):
 
     if gpus_per_node is None:
@@ -48,7 +49,9 @@ def get_llm_args(model: str,
                                max_seq_len=max_seq_len)
 
     kv_cache_config = KvCacheConfig(
-        free_gpu_memory_fraction=free_gpu_memory_fraction)
+        free_gpu_memory_fraction=free_gpu_memory_fraction,
+        enable_block_reuse=enable_block_reuse)
+    print("KV CACHE REUSE: ", kv_cache_config.enable_block_reuse)
 
     pytorch_backend_config = PyTorchConfig() if backend == "pytorch" else None
     dynamic_batch_config = DynamicBatchConfig(
@@ -183,6 +186,10 @@ def launch_server(host: str, port: int, llm_args: dict):
     default=None,
     help="[Experimental] Specify the parser for reasoning models.",
 )
+@click.option("--disable_kv_cache_reuse",
+              is_flag=True,
+              default=False,
+              help="Flag for disabling KV Cache reuse.")
 def serve(model: str, tokenizer: Optional[str], host: str, port: int,
           log_level: str, backend: str, max_beam_width: int,
           max_batch_size: int, max_num_tokens: int, max_seq_len: int,
@@ -190,8 +197,8 @@ def serve(model: str, tokenizer: Optional[str], host: str, port: int,
           cluster_size: Optional[int], gpus_per_node: Optional[int],
           kv_cache_free_gpu_memory_fraction: float,
           num_postprocess_workers: int, trust_remote_code: bool,
-          extra_llm_api_options: Optional[str],
-          reasoning_parser: Optional[str]):
+          extra_llm_api_options: Optional[str], reasoning_parser: Optional[str],
+          disable_kv_cache_reuse: bool):
     """Running an OpenAI API compatible server
 
     MODEL: model name | HF checkpoint path | TensorRT engine path
@@ -214,7 +221,8 @@ def serve(model: str, tokenizer: Optional[str], host: str, port: int,
         free_gpu_memory_fraction=kv_cache_free_gpu_memory_fraction,
         num_postprocess_workers=num_postprocess_workers,
         trust_remote_code=trust_remote_code,
-        reasoning_parser=reasoning_parser)
+        reasoning_parser=reasoning_parser,
+        enable_block_reuse=not disable_kv_cache_reuse)
 
     llm_args_extra_dict = {}
     if extra_llm_api_options is not None:

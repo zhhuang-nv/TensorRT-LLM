@@ -3,6 +3,7 @@ import weakref
 from enum import IntEnum
 from typing import Optional, cast
 
+import nvtx
 import torch
 from torch import nn
 
@@ -21,6 +22,16 @@ from .linear import Linear, TensorParallelMode, WeightMode, WeightsLoadingConfig
 from .multi_stream_utils import maybe_execute_in_parallel
 from .rms_norm import RMSNorm
 from .rotary_embedding import RotaryEmbedding
+
+
+def nvtx_push_range(name):
+    nvtx.push_range(name, color="grey", domain="TensorRT-LLM")
+    # pass
+
+
+def nvtx_pop_range():
+    nvtx.pop_range(domain="TensorRT-LLM")
+    # pass
 
 
 class QkNormType(IntEnum):
@@ -660,6 +671,9 @@ class MLA(nn.Module):
         Returns:
             torch.Tensor: The output tensor.
         """
+        # if self.layer_idx == 0:
+        #     print(f"MLA forward, hidden_states.shape: {hidden_states.shape}")
+        nvtx_push_range("MLA_get_qkv")
         if self.is_lite:
             compressed_kv, k_pe = self.fused_a(hidden_states).split(
                 [self.kv_lora_rank, self.qk_rope_head_dim], -1)
@@ -685,6 +699,7 @@ class MLA(nn.Module):
             self.ln_events[1],
             self.aux_stream,
         )
+        nvtx_pop_range()
 
         # split q, k, v into context and gen batches
         num_contexts = attn_metadata.num_contexts
@@ -695,6 +710,7 @@ class MLA(nn.Module):
         assert q.shape[
             0] == num_tokens, f"Expect q.shape[0] to be {num_tokens}, but got {q.shape[0]}"
 
+        nvtx_push_range("MLA_forward_context")
         if num_contexts > 0:
             q_ctx = q[:num_ctx_tokens, ...]
             compressed_kv_ctx = compressed_kv[:num_ctx_tokens, ...]
@@ -710,7 +726,8 @@ class MLA(nn.Module):
                                                        position_ids)
         else:
             attn_output_context = None
-
+        nvtx_pop_range()
+        nvtx_push_range("MLA_forward_generation")
         if num_generations > 0:
             q_gen = q[num_ctx_tokens:, ...]
             compressed_kv_gen = compressed_kv[num_ctx_tokens:, ...]
@@ -731,6 +748,8 @@ class MLA(nn.Module):
         compressed_kv = None
         k_pe = None
 
+        nvtx_pop_range()
+        nvtx_push_range("MLA_merge_context_and_gen_batches")
         # merge context and gen batches
         if attn_output_context is not None and attn_output_gen is not None:
             assert (
@@ -748,6 +767,7 @@ class MLA(nn.Module):
             attn_output = attn_output_context
         else:
             attn_output = attn_output_gen
+        nvtx_pop_range()
 
         return attn_output
 
@@ -765,7 +785,10 @@ class MLA(nn.Module):
         attn_metadata: AttentionMetadata,
         latent_cache: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        nvtx_push_range("MLA_kv_b_proj")
         kv = self.kv_b_proj(compressed_kv)
+        nvtx_pop_range()
+        nvtx_push_range("MLA_split_k_v")
         k_nope, v = kv.split(
             [
                 self.num_heads * self.qk_nope_head_dim,
@@ -774,7 +797,10 @@ class MLA(nn.Module):
             -1,
         )
 
+        nvtx_pop_range()
+        nvtx_push_range("MLA_concat_q_k_v")
         k = torch.empty_like(q).view(-1, self.num_heads, self.qk_head_dim)
+
         k[..., :self.qk_nope_head_dim] = k_nope.view(-1, self.num_heads,
                                                      self.qk_nope_head_dim)
         if self.apply_rotary_emb:
@@ -785,9 +811,10 @@ class MLA(nn.Module):
         # May concat q(including q_pe), k + k_pe, v together
         q, k, v = self._maybe_concat_qkv(q, k, v)
 
+        nvtx_pop_range()
+        nvtx_push_range("MLA_mha_forward_packed_qkv")
         # out_scale = getattr(self.o_proj, "inv_input_scale", None)
         out_scale = None  # Currently we use BF16 MHA for context phase
-
         attn_output = self.mha.forward(
             q,
             k,
@@ -797,7 +824,7 @@ class MLA(nn.Module):
             latent_cache=latent_cache,
             out_scale=out_scale,
         )
-
+        nvtx_pop_range()
         return attn_output
 
     def forward_context_with_cached_kv(
@@ -808,8 +835,16 @@ class MLA(nn.Module):
         attn_metadata: AttentionMetadata,
         position_ids: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
+        # if self.layer_idx == 0:
+        #     print(
+        #         f"MLA forward_context_with_cached_kv, q.shape: {q.shape}, "
+        #         f"num_contexts: {attn_metadata.num_contexts}, "
+        #         f"num_ctx_cached_tokens: {attn_metadata.num_ctx_cached_tokens}, ",
+        #         f"max_ctx_cached_kv_len: {attn_metadata.max_ctx_cached_kv_len}"
+        #     )
         trtllm_attention = cast(TrtllmAttention, self.mha)
         # copy past_compressed_kv and past_k_pe from paged kv cache
+        nvtx_push_range("MLA_load_paged_kv_cache_for_mla")
         past_latent_cache = trtllm_attention.load_paged_kv_cache_for_mla(
             attn_metadata, q.dtype)
         assert past_latent_cache.shape[0] == attn_metadata.num_ctx_cached_tokens
@@ -817,9 +852,11 @@ class MLA(nn.Module):
             1] == self.kv_lora_rank + self.qk_rope_head_dim
         past_compressed_kv, past_k_pe = past_latent_cache.split(
             [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        nvtx_pop_range()
 
         # compute past_k_nope and past_v from past_compressed_kv
         # TODO: remove this contiguous by return two tensors from load_paged_kv_cache_for_mla
+        nvtx_push_range("MLA_compute_past_k_nope_and_past_v")
         past_compressed_kv = past_compressed_kv.contiguous()
         past_kv = self.kv_b_proj(past_compressed_kv)
         past_k_nope, past_v = past_kv.split(
@@ -832,20 +869,23 @@ class MLA(nn.Module):
         past_k_nope = past_k_nope.view(-1, self.num_heads,
                                        self.qk_nope_head_dim)
         past_v = past_v.view(-1, self.num_heads, self.v_head_dim)
+        nvtx_pop_range()
 
         # compute current k_nope and v from compressed_kv
+        nvtx_push_range("MLA_compute_current_k_nope_and_v")
         kv = self.kv_b_proj(compressed_kv)
         k_nope, v = kv.split([
             self.num_heads * self.qk_nope_head_dim,
             self.num_heads * self.v_head_dim
         ],
                              dim=-1)
+        nvtx_pop_range()
 
         # split current q into q_nope and q_pe
+        nvtx_push_range("MLA_split_current_q_into_q_nope_and_q_pe")
         q_nope, q_pe = q.view([
             -1, self.num_heads, self.qk_nope_head_dim + self.qk_rope_head_dim
         ]).split([self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)
-
         # apply rope to current q_pe and k_pe
         assert position_ids is not None
         assert position_ids.dim() == 1 or (position_ids.dim() == 2
@@ -853,6 +893,8 @@ class MLA(nn.Module):
         assert self.rotary_emb is not None
         assert self.rotary_emb.head_dim == self.qk_rope_head_dim
         assert q_pe.shape[0] == k_pe.shape[0]
+        nvtx_pop_range()
+        nvtx_push_range("MLA_apply_rope_to_current_q_pe_and_k_pe")
         q_pe = q_pe.contiguous().view(-1,
                                       self.num_heads * self.qk_rope_head_dim)
         q_pe, k_pe = self.rotary_emb(
@@ -860,7 +902,10 @@ class MLA(nn.Module):
 
         k_pe = k_pe.contiguous()
 
+        nvtx_pop_range()
+
         # build q for attention op
+        nvtx_push_range("MLA_build_q_for_attention_op")
         q_view = q.view(-1, self.num_heads,
                         self.qk_nope_head_dim + self.qk_rope_head_dim)
         q_view[:, :,
@@ -870,16 +915,20 @@ class MLA(nn.Module):
             -1,
             self.num_heads * (self.qk_nope_head_dim + self.qk_rope_head_dim))
         assert q.is_contiguous()
+        nvtx_pop_range()
 
         # append paged kv cache for mla
         # we may finish it inside the attention op by passing latent_cache
+        nvtx_push_range("MLA_append_paged_kv_cache_for_mla")
         trtllm_attention.append_paged_kv_cache_for_mla(
             compressed_kv,
             k_pe,
             attn_metadata,
         )
+        nvtx_pop_range()
 
         # build full_k and full_v
+        nvtx_push_range("MLA_build_full_k_and_full_v")
         k_nope = k_nope.view(-1, self.num_heads, self.qk_nope_head_dim)
         v = v.view(-1, self.num_heads, self.v_head_dim)
 
@@ -907,7 +956,8 @@ class MLA(nn.Module):
 
         # out_scale = getattr(self.o_proj, "inv_input_scale", None)
         out_scale = None  # Currently we use BF16 MHA for context phase
-
+        nvtx_pop_range()
+        nvtx_push_range("MLA_mha_forward_q_paged_kv")
         attn_output = self.mha.forward(
             q,
             None,
@@ -920,6 +970,7 @@ class MLA(nn.Module):
             mla_context_kv_cache_block_offsets=
             mla_context_kv_cache_block_offsets,
         )
+        nvtx_pop_range()
         return attn_output
 
     def forward_context(
@@ -1050,12 +1101,16 @@ class MLA(nn.Module):
         attn_metadata: AttentionMetadata,
         all_reduce_params: Optional[AllReduceParams] = None,
     ) -> torch.Tensor:
+        nvtx_push_range("MLA_forward")
         if self.register_to_config:
             attn_output = torch.ops.trtllm.mla_custom_op(
                 position_ids, hidden_states, self.layer_idx_str)
         else:
             attn_output = self.forward_impl(position_ids, hidden_states,
                                             attn_metadata)
+        nvtx_push_range("MLA_o_proj")
         attn_output = self.o_proj(attn_output,
                                   all_reduce_params=all_reduce_params)
+        nvtx_pop_range()
+        nvtx_pop_range()
         return attn_output
