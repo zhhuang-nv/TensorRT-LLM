@@ -891,20 +891,21 @@ class MLA(nn.Module):
 
         # copy full_compressed_kv and full_k_pe from paged kv cache
         nvtx_push_range("MLA_load_paged_kv_cache_for_mla")
-        full_latent_cache = trtllm_attention.load_paged_kv_cache_for_mla(
+        full_compressed_kv, full_k_pe = trtllm_attention.load_paged_kv_cache_for_mla(
             attn_metadata, q.dtype)
-        assert full_latent_cache.shape[
+        assert full_compressed_kv.shape[
             0] == attn_metadata.num_ctx_cached_tokens + attn_metadata.num_ctx_tokens
-        assert full_latent_cache.shape[
-            1] == self.kv_lora_rank + self.qk_rope_head_dim
-        full_compressed_kv, full_k_pe = full_latent_cache.split(
-            [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        assert full_compressed_kv.shape[1] == self.kv_lora_rank
+        assert full_k_pe.shape[
+            0] == attn_metadata.num_ctx_cached_tokens + attn_metadata.num_ctx_tokens
+        assert full_k_pe.shape[1] == self.qk_rope_head_dim
+        assert full_compressed_kv.is_contiguous()
+        assert full_k_pe.is_contiguous()
         nvtx_pop_range()
 
         # compute full_k_nope and full_v from full_compressed_kv
-        # TODO: remove this contiguous by return two tensors from load_paged_kv_cache_for_mla
         nvtx_push_range("MLA_compute_full_k_nope_and_full_v")
-        full_kv = self.kv_b_proj(full_compressed_kv.contiguous())
+        full_kv = self.kv_b_proj(full_compressed_kv)
         full_k_nope, full_v = full_kv.split(
             [
                 self.num_heads * self.qk_nope_head_dim,

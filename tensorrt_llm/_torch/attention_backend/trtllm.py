@@ -862,7 +862,7 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
         sink_token_length = 0
         beam_width = 1
 
-        output = torch.ops.trtllm.load_paged_kv_cache_for_mla(
+        compressed_kv, k_pe = torch.ops.trtllm.load_paged_kv_cache_for_mla(
             out_dtype,
             metadata.num_contexts,
             metadata.max_ctx_kv_len,
@@ -874,7 +874,8 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
             self.kv_scale_orig_quant,
             self.kv_scale_quant_orig,
             self.get_local_layer_idx(metadata),
-            metadata.kv_cache_manager.head_dim,
+            self.mla_params.kv_lora_rank,
+            self.mla_params.qk_rope_head_dim,
             metadata.kv_cache_manager.tokens_per_block,
             metadata.kv_cache_manager.max_seq_len,
             sink_token_length,
@@ -882,7 +883,7 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
             self.wrapper.quant_mode,
         )
 
-        return output
+        return compressed_kv, k_pe
 
     def set_paged_kv_cache_for_mla(
         self,
@@ -897,8 +898,6 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
         assert metadata.kv_cache_manager is not None
         assert paged_kv.shape[0] == metadata.num_contexts
         assert paged_kv.is_contiguous()
-
-        k_pe = k_pe.contiguous()
 
         num_contexts = metadata.num_contexts
         max_seq_len = metadata.max_ctx_kv_len
