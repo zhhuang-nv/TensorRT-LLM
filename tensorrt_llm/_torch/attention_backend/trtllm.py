@@ -854,7 +854,7 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
         assert self.is_mla_enable and self.mla_params is not None
         assert metadata.kv_cache_manager is not None
 
-        if metadata.max_ctx_cached_token_len == 0:
+        if metadata.max_ctx_kv_len == 0:
             return torch.empty((0, metadata.kv_cache_manager.head_dim),
                                dtype=out_dtype,
                                device=metadata.ctx_cached_token_indptr.device)
@@ -865,8 +865,8 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
         output = torch.ops.trtllm.load_paged_kv_cache_for_mla(
             out_dtype,
             metadata.num_contexts,
-            metadata.max_ctx_cached_token_len,
-            metadata.ctx_cached_token_indptr,
+            metadata.max_ctx_kv_len,
+            metadata.ctx_kv_indptr,
             metadata.kv_cache_block_offsets,
             metadata.host_kv_cache_block_offsets,
             metadata.kv_cache_manager.kv_cache_pool_pointers,
@@ -898,8 +898,6 @@ class TrtllmAttention(AttentionBackend[TrtllmAttentionMetadata]):
         assert paged_kv.shape[0] == metadata.num_contexts
         assert paged_kv.is_contiguous()
 
-        k = k.contiguous()
-        v = v.contiguous()
         k_pe = k_pe.contiguous()
 
         num_contexts = metadata.num_contexts

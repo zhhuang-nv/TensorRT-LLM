@@ -639,7 +639,7 @@ __global__ void loadPagedKVCacheForMLAKernel(T* kv_output, const tensorrt_llm::k
 template <typename T>
 __global__ void setPagedKVCacheForMLAKernel(T* output, T* const k_ptr, T* const v_ptr, T* const k_pe_ptr,
     int64_t const* cu_seq_lens, int const max_input_seq_len, int num_heads, int kv_dim, int rope_dim,
-    int kv_cache_tokens_per_block)
+    int kv_cache_tokens_per_block, int64_t kv_token_stride)
 {
     using KT = typename tensorrt_llm::kernels::setPagedKVKernelTraits<T>;
     int const batch_idx = static_cast<int>(blockIdx.y);
@@ -665,8 +665,7 @@ __global__ void setPagedKVCacheForMLAKernel(T* output, T* const k_ptr, T* const 
             // copy k and v
             if (is_valid_v)
             {
-                int ld_kv_global_offset
-                    = (global_token_offset + local_token_idx) * num_heads * kv_dim + head_idx * kv_dim;
+                int ld_kv_global_offset = (global_token_offset + local_token_idx) * kv_token_stride + head_idx * kv_dim;
                 int ld_kv_local_offset = head_dim_vec_idx;
                 auto k_data = (reinterpret_cast<typename KT::VecT*>(k_ptr + ld_kv_global_offset))[ld_kv_local_offset];
                 auto v_data = (reinterpret_cast<typename KT::VecT*>(v_ptr + ld_kv_global_offset))[ld_kv_local_offset];
@@ -895,7 +894,7 @@ void invokeMLALoadPagedKV(T* kv_output, KVBlockArray& kv_cache, int const num_co
 template <typename T>
 void invokeMLASetPagedKV(T* output, T* const k_ptr, T* const v_ptr, T* const k_pe_ptr, int const num_requests,
     int64_t const* cu_seq_lens, int const max_input_seq_len, int num_heads, int kv_dim, int rope_dim,
-    int kv_cache_tokens_per_block, cudaStream_t stream)
+    int kv_cache_tokens_per_block, int64_t kv_token_stride, cudaStream_t stream)
 {
     using KT = typename tensorrt_llm::kernels::setPagedKVKernelTraits<T>;
     TLLM_CHECK_WITH_INFO(kv_dim + rope_dim == KT::kHeadSize, "head dim should be equal to %d", KT::kHeadSize);
@@ -903,7 +902,7 @@ void invokeMLASetPagedKV(T* output, T* const k_ptr, T* const v_ptr, T* const k_p
         "kv_cache_tokens_per_block should be multiple of %d", KT::kCpTokenPerBlock);
     dim3 grid(tensorrt_llm::common::divUp(max_input_seq_len, KT::kCpTokenPerBlock), num_requests, num_heads);
     setPagedKVCacheForMLAKernel<T><<<grid, KT::kBlockSize, 0, stream>>>(output, k_ptr, v_ptr, k_pe_ptr, cu_seq_lens,
-        max_input_seq_len, num_heads, kv_dim, rope_dim, kv_cache_tokens_per_block);
+        max_input_seq_len, num_heads, kv_dim, rope_dim, kv_cache_tokens_per_block, kv_token_stride);
 }
 
 template <typename T>
@@ -955,7 +954,7 @@ INSTANTIATE_MLA_ROPE(__nv_bfloat16, KVLinearBuffer);
         const int64_t* cu_ctx_cached_kv_lens, const int max_input_seq_len, int head_dim, cudaStream_t stream);         \
     template void invokeMLASetPagedKV(T* output, T* const k_ptr, T* const v_ptr, T* const k_pe_ptr,                    \
         int const num_requests, int64_t const* cu_seq_lens, int const max_input_seq_len, int num_heads, int kv_dim,    \
-        int rope_dim, int kv_cache_tokens_per_block, cudaStream_t stream);                                             \
+        int rope_dim, int kv_cache_tokens_per_block, int64_t kv_token_stride, cudaStream_t stream);                    \
     template void invokeMLASetPagedKVV2(T* output, T* const cached_k_ptr, T* const cached_v_ptr,                       \
         T* const cached_k_pe_ptr, T* const new_k_ptr, T* const new_v_ptr, T* const new_k_pe_ptr,                       \
         int const num_requests, int64_t const* cu_ctx_cached_kv_lens, int64_t const* cu_seq_lens,                      \

@@ -102,7 +102,7 @@ void invokeMLALoadPagedKV(T* kv_output, KVBlockArray& kv_cache, int const num_co
 template <typename T>
 void invokeMLASetPagedKV(T* output, T* const k_ptr, T* const v_ptr, T* const k_pe_ptr, int const num_requests,
     int64_t const* cu_seq_lens, int const max_input_seq_len, int num_heads, int kv_dim, int rope_dim,
-    int kv_cache_tokens_per_block, cudaStream_t stream);
+    int kv_cache_tokens_per_block, int64_t kv_token_stride, cudaStream_t stream);
 
 template <typename T>
 void invokeMLASetPagedKVV2(T* output, T* const chached_k_ptr, T* const chached_v_ptr, T* const chached_k_pe_ptr,

@@ -843,44 +843,6 @@ class MLA(nn.Module):
         #         f"max_ctx_cached_kv_len: {attn_metadata.max_ctx_cached_kv_len}"
         #     )
         trtllm_attention = cast(TrtllmAttention, self.mha)
-        # copy past_compressed_kv and past_k_pe from paged kv cache
-        nvtx_push_range("MLA_load_paged_kv_cache_for_mla")
-        past_latent_cache = trtllm_attention.load_paged_kv_cache_for_mla(
-            attn_metadata, q.dtype)
-        assert past_latent_cache.shape[0] == attn_metadata.num_ctx_cached_tokens
-        assert past_latent_cache.shape[
-            1] == self.kv_lora_rank + self.qk_rope_head_dim
-        past_compressed_kv, past_k_pe = past_latent_cache.split(
-            [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
-        nvtx_pop_range()
-
-        # compute past_k_nope and past_v from past_compressed_kv
-        # TODO: remove this contiguous by return two tensors from load_paged_kv_cache_for_mla
-        nvtx_push_range("MLA_compute_past_k_nope_and_past_v")
-        past_compressed_kv = past_compressed_kv.contiguous()
-        past_kv = self.kv_b_proj(past_compressed_kv)
-        past_k_nope, past_v = past_kv.split(
-            [
-                self.num_heads * self.qk_nope_head_dim,
-                self.num_heads * self.v_head_dim
-            ],
-            -1,
-        )
-        past_k_nope = past_k_nope.view(-1, self.num_heads,
-                                       self.qk_nope_head_dim)
-        past_v = past_v.view(-1, self.num_heads, self.v_head_dim)
-        nvtx_pop_range()
-
-        # compute current k_nope and v from compressed_kv
-        nvtx_push_range("MLA_compute_current_k_nope_and_v")
-        kv = self.kv_b_proj(compressed_kv)
-        k_nope, v = kv.split([
-            self.num_heads * self.qk_nope_head_dim,
-            self.num_heads * self.v_head_dim
-        ],
-                             dim=-1)
-        nvtx_pop_range()
-
         # split current q into q_nope and q_pe
         nvtx_push_range("MLA_split_current_q_into_q_nope_and_q_pe")
         q_nope, q_pe = q.view([
@@ -927,30 +889,53 @@ class MLA(nn.Module):
         )
         nvtx_pop_range()
 
+        # copy full_compressed_kv and full_k_pe from paged kv cache
+        nvtx_push_range("MLA_load_paged_kv_cache_for_mla")
+        full_latent_cache = trtllm_attention.load_paged_kv_cache_for_mla(
+            attn_metadata, q.dtype)
+        assert full_latent_cache.shape[
+            0] == attn_metadata.num_ctx_cached_tokens + attn_metadata.num_ctx_tokens
+        assert full_latent_cache.shape[
+            1] == self.kv_lora_rank + self.qk_rope_head_dim
+        full_compressed_kv, full_k_pe = full_latent_cache.split(
+            [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)
+        nvtx_pop_range()
+
+        # compute full_k_nope and full_v from full_compressed_kv
+        # TODO: remove this contiguous by return two tensors from load_paged_kv_cache_for_mla
+        nvtx_push_range("MLA_compute_full_k_nope_and_full_v")
+        full_kv = self.kv_b_proj(full_compressed_kv.contiguous())
+        full_k_nope, full_v = full_kv.split(
+            [
+                self.num_heads * self.qk_nope_head_dim,
+                self.num_heads * self.v_head_dim
+            ],
+            -1,
+        )
+        full_k_nope = full_k_nope.view(-1, self.num_heads,
+                                       self.qk_nope_head_dim)
+        full_v = full_v.view(-1, self.num_heads, self.v_head_dim)
+        nvtx_pop_range()
+
         # build full_k and full_v
         nvtx_push_range("MLA_build_full_k_and_full_v")
-        k_nope = k_nope.view(-1, self.num_heads, self.qk_nope_head_dim)
-        v = v.view(-1, self.num_heads, self.v_head_dim)
 
         tokens_per_block = attn_metadata.kv_cache_manager.tokens_per_block
         # paged kv cache should be initialized to 0 to avoid NaN
-        full_kv = torch.zeros([
+        paged_full_kv = torch.zeros([
             attn_metadata.num_contexts, 2,
             (attn_metadata.max_ctx_kv_len + tokens_per_block - 1) //
             tokens_per_block, self.num_heads, tokens_per_block,
             max(self.qk_nope_head_dim + self.qk_rope_head_dim, self.v_head_dim)
         ],
-                              dtype=q.dtype,
-                              device=q.device)
+                                    dtype=q.dtype,
+                                    device=q.device)
 
-        mla_context_kv_cache_block_offsets = trtllm_attention.set_paged_kv_cache_v2_for_mla(
-            full_kv,
-            past_k_nope,
-            past_v,
-            past_k_pe,
-            k_nope,
-            v,
-            k_pe,
+        mla_context_kv_cache_block_offsets = trtllm_attention.set_paged_kv_cache_for_mla(
+            paged_full_kv,
+            full_k_nope,
+            full_v,
+            full_k_pe,
             attn_metadata,
         )
 
@@ -966,7 +951,7 @@ class MLA(nn.Module):
             attention_input_type=AttentionInputType.context_only,
             latent_cache=None,
             out_scale=out_scale,
-            mla_context_paged_kv=full_kv,
+            mla_context_paged_kv=paged_full_kv,
             mla_context_kv_cache_block_offsets=
             mla_context_kv_cache_block_offsets,
         )
