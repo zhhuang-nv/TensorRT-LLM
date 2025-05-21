@@ -457,8 +457,7 @@ class TestDeepSeekV3Lite(LlmapiAccuracyTestHarness):
         if torch_compile and attention_dp:
             pytest.skip("https://nvbugs/5252559")
         # OOM on H100 with default free_gpu_memory_fraction=0.9
-        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8,
-                                        enable_block_reuse=not fp8kv)
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
         pytorch_config = PyTorchConfig(
             disable_overlap_scheduler=not overlap_scheduler,
             use_cuda_graph=cuda_graph,
@@ -537,8 +536,7 @@ class TestDeepSeekV3Lite(LlmapiAccuracyTestHarness):
         if torch_compile and pp_size > 1:
             pytest.skip("PP with torch.compile is not supported yet.")
         # OOM on H100 with default free_gpu_memory_fraction=0.9
-        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8,
-                                        enable_block_reuse=not fp8kv)
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
         pytorch_config = PyTorchConfig(
             disable_overlap_scheduler=not overlap_scheduler,
             use_cuda_graph=cuda_graph,
@@ -590,8 +588,7 @@ class TestDeepSeekV3Lite(LlmapiAccuracyTestHarness):
                    torch_compile):
         if torch_compile and attention_dp:
             pytest.skip("https://nvbugs/5252559")
-        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.9,
-                                        enable_block_reuse=not fp8kv)
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.9)
 
         pytorch_config = PyTorchConfig(
             disable_overlap_scheduler=not overlap_scheduler,
@@ -643,8 +640,7 @@ class TestDeepSeekV3Lite(LlmapiAccuracyTestHarness):
             pytest.skip("https://nvbugs/5252559")
         if torch_compile and pp_size > 1:
             pytest.skip("PP with torch.compile is not supported yet.")
-        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.9,
-                                        enable_block_reuse=not fp8kv)
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.9)
         pytorch_config = PyTorchConfig(
             disable_overlap_scheduler=not overlap_scheduler,
             use_cuda_graph=cuda_graph,
@@ -768,8 +764,7 @@ class TestDeepSeekR1(LlmapiAccuracyTestHarness):
                          attention_dp, cuda_graph, overlap_scheduler,
                          batch_size, moe_backend):
 
-        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.4,
-                                        enable_block_reuse=not fp8kv)
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.4)
         pytorch_config = PyTorchConfig(
             disable_overlap_scheduler=not overlap_scheduler,
             use_cuda_graph=cuda_graph)
