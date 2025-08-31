@@ -313,3 +313,5 @@ mistralai/Mistral-Nemo-12b-Base:
   - accuracy: 69.66
   - quant_algo: FP8
     accuracy: 69.66
+ByteDance-Seed/Seed-OSS-36B-Instruct:
+  - accuracy: 84.7

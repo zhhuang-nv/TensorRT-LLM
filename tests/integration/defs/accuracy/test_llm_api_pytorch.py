@@ -3356,3 +3356,29 @@ class TestNano_V2_VLM(LlmapiAccuracyTestHarness):
                  kv_cache_config=self.kv_cache_config) as llm:
             task = MMMU(self.MODEL_NAME)
             task.evaluate(llm, sampling_params=self.sampling_params)
+
+
+class TestSeedOss_36B(LlmapiAccuracyTestHarness):
+    MODEL_NAME = "ByteDance-Seed/Seed-OSS-36B-Instruct"
+
+    # accuracy/test_llm_api_pytorch.py::TestSeedOss_36B::test_bf16[latency]
+    @pytest.mark.parametrize(
+        "tp_size,pp_size,ep_size,attention_dp,cuda_graph,overlap_scheduler",
+        [(1, 1, 1, False, True, True)],
+        ids=["latency"])
+    def test_bf16(self, tp_size, pp_size, ep_size, attention_dp, cuda_graph,
+                  overlap_scheduler):
+        pytorch_config = dict(
+            disable_overlap_scheduler=not overlap_scheduler,
+            cuda_graph_config=CudaGraphConfig() if cuda_graph else None)
+
+        with LLM("/home/scratch.zhhuang_sw/models/Seed-OSS-36B-Instruct",
+                 tensor_parallel_size=tp_size,
+                 pipeline_parallel_size=pp_size,
+                 moe_expert_parallel_size=ep_size,
+                 **pytorch_config,
+                 enable_attention_dp=attention_dp) as llm:
+            task = CnnDailymail(self.MODEL_NAME)
+            task.evaluate(llm)
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)

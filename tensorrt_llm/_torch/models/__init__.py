@@ -26,6 +26,7 @@ from .modeling_qwen2vl import Qwen2_5_VLModel, Qwen2VLModel
 from .modeling_qwen3 import Qwen3ForCausalLM
 from .modeling_qwen3_moe import Qwen3MoeForCausalLM
 from .modeling_qwen_moe import Qwen2MoeForCausalLM
+from .modeling_seed_oss import SeedOssForCausalLM
 from .modeling_siglip import SiglipVisionModel
 from .modeling_utils import get_model_architecture
 from .modeling_vila import VilaModel
@@ -56,6 +57,7 @@ __all__ = [
     "Qwen2ForProcessRewardModel",
     "Qwen2ForRewardModel",
     "Qwen2MoeForCausalLM",
+    "SeedOssForCausalLM",
     "SiglipVisionModel",
     "get_model_architecture",
     "VilaModel",
