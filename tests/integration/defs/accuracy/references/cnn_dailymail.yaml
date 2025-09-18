@@ -373,5 +373,3 @@ Qwen3/Qwen3-8B:
   - accuracy: 30
 nvidia/Llama-3_3-Nemotron-Super-49B-v1:
   - accuracy: 34.003
-ByteDance-Seed/Seed-OSS-36B-Instruct:
-  - accuracy: 30

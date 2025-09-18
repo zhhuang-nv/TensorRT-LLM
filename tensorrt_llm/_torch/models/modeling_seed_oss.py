@@ -2,7 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 from torch import nn
-from transformers import Qwen3Config as SeedOssConfig
+from transformers import SeedOssConfig
 
 from tensorrt_llm.functional import PositionEmbeddingType
 
@@ -50,8 +50,7 @@ class SeedOssAttention(Attention):
             pos_embd_params=pos_embd_params,
             layer_idx=layer_idx,
             dtype=config.torch_dtype,
-            dense_bias=config.attention_out_bias if hasattr(
-                config, "attention_out_bias") else False,
+            dense_bias=config.attention_out_bias,
             config=model_config,
         )
 

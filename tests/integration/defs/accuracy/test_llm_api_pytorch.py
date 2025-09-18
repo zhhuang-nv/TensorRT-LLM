@@ -3361,6 +3361,9 @@ class TestNano_V2_VLM(LlmapiAccuracyTestHarness):
 class TestSeedOss_36B(LlmapiAccuracyTestHarness):
     MODEL_NAME = "ByteDance-Seed/Seed-OSS-36B-Instruct"
 
+    gsm8k_sampling_params = SamplingParams(
+        max_tokens=16384, truncate_prompt_tokens=GSM8K.MAX_INPUT_LEN)
+
     # accuracy/test_llm_api_pytorch.py::TestSeedOss_36B::test_bf16[latency]
     @pytest.mark.parametrize(
         "tp_size,pp_size,ep_size,attention_dp,cuda_graph,overlap_scheduler",
@@ -3378,7 +3381,59 @@ class TestSeedOss_36B(LlmapiAccuracyTestHarness):
                  moe_expert_parallel_size=ep_size,
                  **pytorch_config,
                  enable_attention_dp=attention_dp) as llm:
-            task = CnnDailymail(self.MODEL_NAME)
-            task.evaluate(llm)
             task = MMLU(self.MODEL_NAME)
             task.evaluate(llm)
+            task = GSM8K(self.MODEL_NAME)
+            task.evaluate(llm, sampling_params=self.gsm8k_sampling_params)
+
+    # accuracy/test_llm_api_pytorch.py::TestSeedOss_36B::test_fp8[latency]
+    @skip_pre_hopper
+    @pytest.mark.parametrize(
+        "tp_size,pp_size,ep_size,attention_dp,cuda_graph,overlap_scheduler",
+        [(1, 1, 1, False, True, True)],
+        ids=["latency"])
+    def test_fp8(self, tp_size, pp_size, ep_size, attention_dp, cuda_graph,
+                 overlap_scheduler):
+        pytorch_config = dict(
+            disable_overlap_scheduler=not overlap_scheduler,
+            cuda_graph_config=CudaGraphConfig() if cuda_graph else None)
+
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
+        with LLM("/home/scratch.zhhuang_sw/models/Seed-OSS-36B-Instruct-FP8",
+                 tensor_parallel_size=tp_size,
+                 pipeline_parallel_size=pp_size,
+                 moe_expert_parallel_size=ep_size,
+                 **pytorch_config,
+                 enable_attention_dp=attention_dp,
+                 kv_cache_config=kv_cache_config) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+            task = GSM8K(self.MODEL_NAME)
+            task.evaluate(llm, sampling_params=self.gsm8k_sampling_params)
+
+    # accuracy/test_llm_api_pytorch.py::TestSeedOss_36B::test_nvfp4[latency]
+    @skip_pre_blackwell
+    @pytest.mark.parametrize(
+        "tp_size,pp_size,ep_size,attention_dp,cuda_graph,overlap_scheduler",
+        [(1, 1, 1, False, True, True)],
+        ids=["latency"])
+    def test_nvfp4(self, tp_size, pp_size, ep_size, attention_dp, cuda_graph,
+                   overlap_scheduler):
+
+        pytorch_config = dict(
+            disable_overlap_scheduler=not overlap_scheduler,
+            cuda_graph_config=CudaGraphConfig() if cuda_graph else None)
+
+        kv_cache_config = KvCacheConfig(free_gpu_memory_fraction=0.8)
+
+        with LLM("/home/scratch.zhhuang_sw/models/Seed-OSS-36B-Instruct-NVFP4",
+                 tensor_parallel_size=tp_size,
+                 pipeline_parallel_size=pp_size,
+                 moe_expert_parallel_size=ep_size,
+                 **pytorch_config,
+                 enable_attention_dp=attention_dp,
+                 kv_cache_config=kv_cache_config) as llm:
+            task = MMLU(self.MODEL_NAME)
+            task.evaluate(llm)
+            task = GSM8K(self.MODEL_NAME)
+            task.evaluate(llm, sampling_params=self.gsm8k_sampling_params)
