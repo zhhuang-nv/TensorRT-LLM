@@ -284,6 +284,18 @@ class ModelConfig(Generic[TConfig]):
         quant_config.exclude_modules = json_quant_configs.get(
             'exclude_modules', None)
 
+        print(
+            f"============ quant_config.quant_algo: {quant_config.quant_algo} ============="
+        )
+        print(
+            f"============ quant_config.kv_cache_quant_algo: {quant_config.kv_cache_quant_algo} ============="
+        )
+        print(
+            f"============ quant_config.group_size: {quant_config.group_size} ============="
+        )
+        print(
+            f"============ quant_config.exclude_modules: {quant_config.exclude_modules} ============="
+        )
         if quant_config.quant_algo == QuantAlgo.MIXED_PRECISION:
             json_extended_quant_configs: dict = {}
             # See tests/unittest/llmapi/test_llm_quant.py

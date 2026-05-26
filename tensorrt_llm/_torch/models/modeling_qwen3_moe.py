@@ -6,6 +6,7 @@ from torch import nn
 from transformers import Qwen3MoeConfig
 
 from tensorrt_llm._ipc_utils import can_access_peer
+from tensorrt_llm.models.modeling_utils import QuantConfig
 
 from ..attention_backend import AttentionMetadata
 from ..distributed import (AllReduce, AllReduceFusionOp, AllReduceParams,
@@ -26,6 +27,36 @@ from ..utils import AuxStreamType
 from .modeling_qwen3 import Qwen3Attention
 from .modeling_speculative import SpecDecOneEngineForCausalLM
 from .modeling_utils import DecoderModel, EagerFusionConfig, register_auto_model
+
+
+def _get_qwen3_moe_override_quant_config(
+    model_config: ModelConfig[Qwen3MoeConfig],
+    layer_idx: Optional[int],
+) -> Optional[QuantConfig]:
+    """Pick expert QuantConfig from quant_cfg.json (mixed precision) for MoE backend.
+
+    Checkpoint keys look like ``model.layers.{i}.mlp.experts.0.gate_proj``; the fused
+    MoE backend must see NVFP4 (etc.) via ``override_quant_config``, not the global
+    ``MIXED_PRECISION`` quant_algo (whose layer_quant_mode has no weight flags).
+    """
+    if layer_idx is None:
+        return None
+    qdict = model_config.quant_config_dict
+    if not qdict:
+        return None
+    global_qc = model_config.quant_config
+    layer_name = f"model.layers.{layer_idx}"
+    if global_qc is not None and global_qc.is_module_excluded_from_quantization(
+            layer_name):
+        return QuantConfig(
+            quant_algo=None,
+            kv_cache_quant_algo=global_qc.kv_cache_quant_algo,
+        )
+    prefix = f"model.layers.{layer_idx}.mlp.experts."
+    for ckpt_key, layer_qc in qdict.items():
+        if ckpt_key.startswith(prefix):
+            return layer_qc
+    return None
 
 
 class Qwen3Gate(nn.Module):
@@ -104,6 +135,9 @@ class Qwen3MoE(nn.Module):
             self.allreduce = AllReduce(mapping=model_config.mapping,
                                        strategy=model_config.allreduce_strategy)
 
+        override_quant_config = _get_qwen3_moe_override_quant_config(
+            model_config, layer_idx)
+
         self.gate = Qwen3Gate(
             hidden_size=self.hidden_dim,
             num_experts=self.num_experts,
@@ -111,7 +145,7 @@ class Qwen3MoE(nn.Module):
             dtype=config.torch_dtype,
             apply_routing=False,
             routing_method_type=RoutingMethodType.Renormalize,
-            moe_backend_cls=get_moe_cls(model_config),
+            moe_backend_cls=get_moe_cls(model_config, override_quant_config),
         )
 
         self.weight_loading_mode = MoEWeightLoadingMode.FUSED_GATE_UP_PROJ if config.model_type == "qwen3_vl_moe_text" else MoEWeightLoadingMode.VANILLA
@@ -126,6 +160,7 @@ class Qwen3MoE(nn.Module):
             model_config=model_config,
             layer_idx=layer_idx,
             weight_loading_mode=self.weight_loading_mode,
+            override_quant_config=override_quant_config,
         )
 
     def forward(

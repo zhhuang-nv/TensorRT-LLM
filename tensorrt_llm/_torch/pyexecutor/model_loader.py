@@ -391,6 +391,7 @@ class ModelLoader:
 
                 self.weight_mapper = checkpoint_loader.get_initialized_weight_mapper(
                     model, config)
+                print(f"type(weight_mapper): {type(self.weight_mapper)}")
                 self._call_load_weights(model.load_weights, weights,
                                         self.weight_mapper)
 

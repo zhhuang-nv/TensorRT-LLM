@@ -258,10 +258,12 @@ class DeepseekV3WeightLoader:
 
             kv_b_proj = weights[f"{module_name}.{weight_name}"][:].cuda()
 
-            weight_name = "weight_scale_inv"
-            kv_b_proj_scale = weights[f"{module_name}.{weight_name}"][:].cuda()
-
-            kv_b_proj = weight_dequant(kv_b_proj, kv_b_proj_scale)
+            if kv_b_proj.dtype not in (torch.bfloat16, torch.float16,
+                                       torch.float32):
+                weight_name = "weight_scale_inv"
+                kv_b_proj_scale = weights[
+                    f"{module_name}.{weight_name}"][:].cuda()
+                kv_b_proj = weight_dequant(kv_b_proj, kv_b_proj_scale)
             kv_b_proj = kv_b_proj.unflatten(
                 0,
                 [
@@ -916,6 +918,16 @@ class Deepseekv3MoE(nn.Module):
                              fuse_routing_kernel=True,
                              apply_routing=False,
                              moe_backend=model_config.moe_backend)
+        # For MIXED_PRECISION, resolve the per-expert quant config (e.g. W4A8_AWQ)
+        # instead of using the ambiguous global MIXED_PRECISION config.
+        # For other cases (e.g. nvfp4, unquantized MTP layers), use
+        # override_quant_config as-is — it already encodes exclusions like MTP.
+        if (override_quant_config is not None and
+                override_quant_config.quant_algo == QuantAlgo.MIXED_PRECISION):
+            expert_quant_config = self._get_experts_quant_config(
+                model_config, layer_idx)
+        else:
+            expert_quant_config = override_quant_config
         self.experts = create_moe(
             num_experts=num_experts,
             routing_method=self.gate.routing_method,
@@ -925,17 +937,15 @@ class Deepseekv3MoE(nn.Module):
             reduce_results=
             False,  # In both low‑latency and attention‑DP modes, FusedMoE skips the in‑op all‑reduce.
             model_config=model_config,
-            override_quant_config=override_quant_config,
+            override_quant_config=expert_quant_config,
             aux_stream_dict=aux_stream_dict,
             layer_idx=layer_idx,
             # DS-R1 W4A8 is only supported through custom quantization script from
             # examples/quantization/quantize_mixed_precision_moe.py
-            weight_loading_mode=(
-                MoEWeightLoadingMode.W4A8_CUSTOM
-                if self._get_experts_quant_config(
-                    model_config,
-                    layer_idx).layer_quant_mode.is_int4_weight_only_per_group()
-                else MoEWeightLoadingMode.VANILLA),
+            weight_loading_mode=(MoEWeightLoadingMode.W4A8_CUSTOM
+                                 if expert_quant_config.layer_quant_mode.
+                                 is_int4_weight_only_per_group() else
+                                 MoEWeightLoadingMode.VANILLA),
         )
 
         self.mapping = model_config.mapping
@@ -1036,8 +1046,15 @@ class Deepseekv3MoE(nn.Module):
     def _get_experts_quant_config(model_config, layer_idx: int) -> QuantConfig:
         if getattr(model_config, "quant_config_dict", None) is None:
             return model_config.quant_config
-        return model_config.quant_config_dict.get(
-            f"model.layers.{layer_idx}.mlp.experts", model_config.quant_config)
+        base_name = f"model.layers.{layer_idx}.mlp.experts"
+        direct = model_config.quant_config_dict.get(base_name)
+        if direct is not None:
+            return direct
+        prefix = base_name + "."
+        for name, qcfg in model_config.quant_config_dict.items():
+            if name.startswith(prefix):
+                return qcfg
+        return model_config.quant_config
 
     def _create_ideal_expert_load_balanced_logits(
             self, num_tokens: int, num_experts: int,
@@ -1189,6 +1206,55 @@ class Deepseekv3MoE(nn.Module):
             return final_hidden_states
 
 
+def _apply_per_module_quant_overrides(
+    parent: nn.Module,
+    name_map: Dict[str, str],
+    model_config: ModelConfig[PretrainedConfig],
+) -> bool:
+    """Route per-module quant_configs from ``model_config.quant_config_dict``
+    to each sub-Linear under ``parent``, so modelopt MIXED_PRECISION
+    checkpoints with per-tensor FP8 / NVFP4 entries on attention / dense MLP
+    modules are honored (not just MoE experts).
+
+    Modules matching the global ``exclude_modules`` pattern are forced to
+    unquantized so e.g. MLA's BF16 kv_b_proj stays BF16.
+
+    Any Linear whose ``quant_config`` is changed has its weight buffer
+    re-allocated with the correct dtype via a fresh ``create_weights()`` call.
+    """
+    global_qc = model_config.quant_config
+    if global_qc is None or global_qc.quant_algo != QuantAlgo.MIXED_PRECISION:
+        return False
+    qdict = getattr(model_config, "quant_config_dict", None)
+    excluded_cfg = QuantConfig(
+        quant_algo=None,
+        kv_cache_quant_algo=global_qc.kv_cache_quant_algo,
+    )
+    changed_any = False
+    seen_ids = set()
+    for attr_name, ckpt_name in name_map.items():
+        linear = getattr(parent, attr_name, None)
+        if linear is None or not hasattr(linear, "quant_config"):
+            continue
+        if id(linear) in seen_ids:
+            continue
+        seen_ids.add(id(linear))
+        if global_qc.is_module_excluded_from_quantization(ckpt_name):
+            new_cfg = excluded_cfg
+        else:
+            new_cfg = qdict.get(ckpt_name) if qdict else None
+            if new_cfg is None:
+                continue
+        if new_cfg is linear.quant_config:
+            continue
+        linear.quant_config = new_cfg
+        linear._weights_created = False
+        if not model_config.skip_create_weights_in_init:
+            linear.create_weights()
+        changed_any = True
+    return changed_any
+
+
 class DeepseekV3DecoderLayer(DecoderLayer):
 
     def __init__(self,
@@ -1243,18 +1309,40 @@ class DeepseekV3DecoderLayer(DecoderLayer):
                 mapping_with_cp=mapping_with_cp,
                 reduce_output=needs_tp_reduce or needs_cp_reduce)
 
+        # For modelopt MIXED_PRECISION checkpoints, resolve each attention
+        # Linear's per-module quant_config from quant_config_dict (keyed by full
+        # module name). The MLA base class passes the *global* quant_config to
+        # every sub-Linear, so without this override a per-tensor FP8 ckpt is
+        # silently treated as unquantized (QuantMode(0)).
+        attn_prefix = f"model.layers.{layer_idx_for_attention}.self_attn"
+        _apply_per_module_quant_overrides(
+            self.self_attn,
+            {
+                # non-lite MLA fuses q_a_proj into kv_a_proj_with_mqa; the
+                # kv_a_proj_with_mqa ckpt entry and q_a_proj ckpt entry share
+                # the same recipe in modelopt output, so either is fine.
+                "kv_a_proj_with_mqa": f"{attn_prefix}.kv_a_proj_with_mqa",
+                "q_b_proj": f"{attn_prefix}.q_b_proj",
+                "q_proj": f"{attn_prefix}.q_proj",
+                "kv_b_proj": f"{attn_prefix}.kv_b_proj",
+                "o_proj": f"{attn_prefix}.o_proj",
+            },
+            model_config,
+        )
+
         self.fusion_config = EagerFusionConfig()
         self.enable_fusion = os.environ.get(
             "TRTLLM_DEEPSEEK_EAGER_FUSION_DISABLED", "0") == "0"
         self.enable_fusion &= not self.enable_attention_dp
 
-        # FIXME: incompatible with mixed quantization mode
         quant_config = self._get_decoder_layer_quant_config(
             model_config, layer_idx)
-        self.is_nvfp4 = quant_config.layer_quant_mode.has_nvfp4()
-        assert (
-            quant_config.quant_algo
-            is not QuantAlgo.MIXED_PRECISION), "MIXED_PRECISION is ambiguous"
+        # For MIXED_PRECISION, the global quant_algo doesn't map to a single
+        # QuantMode.  Per-module configs (e.g. expert W4A8_AWQ vs attention
+        # FP8_BLOCK_SCALES) are resolved individually where needed, so we
+        # conservatively set layer-level flags here.
+        self.is_nvfp4 = (quant_config.quant_algo != QuantAlgo.MIXED_PRECISION
+                         and quant_config.layer_quant_mode.has_nvfp4())
 
         self.allreduce = None
         self.moe_allreduce = None
@@ -1305,6 +1393,18 @@ class DeepseekV3DecoderLayer(DecoderLayer):
                 reduce_output=has_mlp_tp,
                 use_cute_dsl_blockscaling_mm=model_config.
                 use_cute_dsl_blockscaling_mm,
+            )
+            # Same MIXED_PRECISION per-module routing as attention above.
+            # gate_up_proj is fused from ckpt's gate_proj + up_proj; both share
+            # the same recipe, so either entry is fine.
+            mlp_prefix = f"model.layers.{layer_idx}.mlp"
+            _apply_per_module_quant_overrides(
+                self.mlp,
+                {
+                    "gate_up_proj": f"{mlp_prefix}.gate_proj",
+                    "down_proj": f"{mlp_prefix}.down_proj",
+                },
+                model_config,
             )
 
         self.input_layernorm = RMSNorm(hidden_size=config.hidden_size,
