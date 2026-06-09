@@ -515,9 +515,6 @@ class CutlassFusedMoE(MoE):
         return True
 
     def _get_quant_method(self):
-        # print(f">>>>>>> self.quant_config: {self.quant_config}")
-        # print(f">>>>>>> self.quant_config.layer_quant_mode: {self.quant_config.layer_quant_mode}")
-        # print(f">>>>>>> self.quant_config.layer_quant_mode.has_any_quant(exclude_kv_cache=True): {self.quant_config.layer_quant_mode.has_any_quant(exclude_kv_cache=True)}")
         if self.quant_config is not None and self.quant_config.layer_quant_mode.has_any_quant(
                 exclude_kv_cache=True):
             if self.quant_config.layer_quant_mode.has_fp8_qdq():
@@ -552,7 +549,6 @@ class CutlassFusedMoE(MoE):
             return
 
         self.quant_method = self._get_quant_method()
-        # print(f">>>>>>> self.quant_method: {self.quant_method}")
         self.quant_method.create_weights(self)
 
         self._weights_created = True
